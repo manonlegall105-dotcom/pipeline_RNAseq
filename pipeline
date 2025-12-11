@@ -1,0 +1,224 @@
+#!/bin/bash
+set -euo pipefail
+
+#           Variables
+DATA_DIR="/home/manon1/projet_tp/data"
+RESULT_DIR="/home/manon1/projet_tp/results"
+IMG1="/home/manon1/Img_SIF/fastqc_0.12.1--hdfd78af_0"
+IMG2="/home/manon1/Img_SIF/sickle-trim_1.33--he4a0461_10"
+IMG3="/home/manon1/Img_SIF/bowtie2_2.5.4--he96a11b_6"
+IMG4="/home/manon1/Img_SIF/samtools_1.9--h91753b0_5"
+IMG5="/home/manon1/Img_SIF/subread_2.1.1--h577a1d6_0"
+IMG6="/home/manon1/Img_SIF/deseq2_1.46.0--r44he5774e6_1"
+SAMPLES=("tn38R1" "tn38R2" "tn115R1" "tn115R2")
+REF_FASTA="${DATA_DIR}/Pseudomonas_aeruginosa_PA14.fasta"
+REF_GFF="${DATA_DIR}/Pseudomonas_aeruginosa_PA14.gff3"
+METADATA_FILE="${RESULT_DIR}/featureCounts/metadata_deseq2.tsv"
+
+# Création des dossiers
+mkdir -p "${RESULT_DIR}"/{fastqc_report,fastqc_report_trimmed,sickle_trim,bowtie,featureCounts,DESeq2}
+
+# =========================
+#          FASTQC
+# =========================
+
+for SAMPLE in "${SAMPLES[@]}"; do
+INPUT=(${DATA_DIR}/${SAMPLE}_*.fastq)
+OUTPUT_DIR="${RESULT_DIR}/fastqc_report"
+if compgen -G "${OUTPUT_DIR}/${SAMPLE}_*_fastqc.html" > /dev/null; then
+echo "$SAMPLE already treated, nothing to do."
+else
+  echo "Running FastQC $SAMPLE..."
+apptainer exec "$IMG1" fastqc --threads 6 \
+"${INPUT[@]}" \
+--outdir="$OUTPUT_DIR"
+echo "  ✓ $SAMPLE : done"
+fi
+done
+
+echo "All FASTQC done."
+
+# =========================
+#          SICKLE
+# =========================
+for R1 in "${DATA_DIR}"/*_R1_001.fastq; do
+R2="${R1/_R1_/_R2_}"
+# Keep the sample basename without the extension
+SAMPLE=$(basename "$R1" | sed 's/_R1_001.fastq//')
+
+# Output files
+OUT_R1="${RESULT_DIR}/sickle_trim/${SAMPLE}_R1_trimmed.fastq"
+OUT_R2="${RESULT_DIR}/sickle_trim/${SAMPLE}_R2_trimmed.fastq"
+OUT_SINGLES="${RESULT_DIR}/sickle_trim/${SAMPLE}_singles_trimmed.fastq"
+if [ ! -f "$OUT_R1" ] || [ ! -f "$OUT_R2" ]; then
+echo "$SAMPLE is trimming..."
+apptainer exec "$IMG2" sickle pe \
+-f "$R1" \
+-r "$R2" \
+-t sanger \
+-o "$OUT_R1" \
+-p "$OUT_R2" \
+-s "$OUT_SINGLES" \
+-q 28 \
+-l 25
+echo " ✓ $SAMPLE : done"
+else
+  echo "$SAMPLE already trimmed, skipping."
+fi
+done
+
+echo " ✓ All trimming done."
+
+# ==================================
+#          FASTQC_trimmed
+# ==================================
+for SAMPLE in "${SAMPLES[@]}"; do
+INPUT=(${RESULT_DIR}/sickle_trim/${SAMPLE}_*_trimmed.fastq)
+OUTPUT_DIR="${RESULT_DIR}/fastqc_report_trimmed"
+
+if compgen -G "${OUTPUT_DIR}/${SAMPLE}_*_fastqc_trimmed.html" > /dev/null; then
+echo "$SAMPLE already treated, nothing to do."
+else
+  echo "Running FastQC $SAMPLE..."
+apptainer exec "$IMG1" fastqc --threads 6 \
+"${INPUT[@]}" \
+--outdir="$OUTPUT_DIR"
+echo " ✓ $SAMPLE : done"
+fi
+done
+
+echo " ✓ All FASTQC_trimmed done."
+
+# =========================
+#          BOWTIE2
+# =========================
+#Building the index
+GENOME_INDEX="${RESULT_DIR}/bowtie/genome_index"
+if compgen -G "${GENOME_INDEX}".*.bt2 > /dev/null; then
+echo "Bowtie2 index already exists, skipping build."
+else
+  echo "Building Bowtie2 index..."
+apptainer exec "$IMG3" bowtie2-build "$REF_FASTA" "$GENOME_INDEX"
+echo " ✓ Index built successfully."
+fi
+
+#Alignment
+ALIGN_DIR="${RESULT_DIR}/bowtie"
+for SAMPLE in "${SAMPLES[@]}"; do
+OUT_BAM="${ALIGN_DIR}/${SAMPLE}.sorted.bam"
+OUT_BAI="${OUT_BAM}.bai"
+
+if [[ -f "$OUT_BAM" && -f "$OUT_BAI" ]]; then
+echo "$SAMPLE already aligned and indexed."
+else
+    OUT_R1=("${RESULT_DIR}/sickle_trim/${SAMPLE}_*_R1_trimmed.fastq")
+    OUT_R2=("${RESULT_DIR}/sickle_trim/${SAMPLE}_*_R2_trimmed.fastq")
+  echo "Running Bowtie2 $SAMPLE..."
+if [[ ${#OUT_R1[@]} -eq 0 || ${#OUT_R2[@]} -eq 0 ]]; then
+  echo "  ⚠ $SAMPLE : fichiers trimmés manquants, ignoré"
+  continue
+  fi
+  apptainer exec "$IMG3" bowtie2 -x "$GENOME_INDEX" \
+  -1 ${OUT_R1[@]} -2 ${OUT_R2[@]} | \
+  apptainer exec "$IMG4" samtools view -Sb - | \
+  apptainer exec "$IMG4" samtools sort -o "$OUT_BAM"
+  
+  echo "Indexing $SAMPLE BAM file..."
+  apptainer exec "$IMG4" samtools index "$OUT_BAM"
+  echo " ✓ $SAMPLE : done"
+fi
+done
+
+echo " ✓ All alignments done."
+
+# =================================
+#          FeautureCounts
+# =================================
+for SAMPLE in "${SAMPLES[@]}"; do
+OUTPUT_DIR="${RESULT_DIR}/featureCounts"
+COUNT_TABLE="${OUTPUT_DIR}/count_table.txt"
+if compgen -G "$COUNT_TABLE" > /dev/null; then
+echo "count_table file already exists."
+else
+# Check if there are BAM files to analyse
+    BAM_FILES=(${RESULT_DIR}/bowtie/*.sorted.bam)
+  if [ ${#BAM_FILES[@]} -eq 0 ]; then
+    echo "  ✗ Error : no BAM file found"
+    exit 1
+    fi
+echo "Running subread for ${#BAM_FILES[@]} sample..."
+apptainer exec "$IMG5" featureCounts \
+-p \
+-a ${REF_GFF} \
+-o ${COUNT_TABLE} \
+-t exon \
+-g gene_id \
+-s 1 \
+${BAM_FILES[@]}
+echo "  ✓ counting done"
+fi
+# Take only necessary informations from count_table
+COUNT_TABLE_CLEAN="${OUTPUT_DIR}/count_table_clean.txt"
+    if [ -f "$COUNT_TABLE_CLEAN" ]; then
+    echo "  count table already clean"
+    else
+      if [ -f "$COUNT_TABLE" ]; then
+    sed 's|/home/manon1/projet_tp/results/bowtie/||g; s|\.sorted\.bam||g' \
+    "$COUNT_TABLE" > "$COUNT_TABLE_CLEAN"
+    echo " Count table clean and saved : $COUNT_TABLE_CLEAN"
+    fi
+    fi
+    
+    echo "✓ FeatureCounts : done"
+done
+
+# =================================
+#              DESeq2
+# =================================
+#micromamba create -n r_env r-base=4.4.2 r-essentials -c conda-forge
+#micromamba activate r_env
+
+# Create metadata file
+METADATA_FILE="${RESULT_DIR}/DESeq2/metadata_deseq2.tsv"
+if [ -f "$METADATA_FILE" ]; then
+    echo "Metadata file already exists"
+    else
+    cat > "$METADATA_FILE" << EOF
+sample_ID	condition
+tn115R1	test
+tn115R2	test
+tn38R1	control
+tn38R2	control
+EOF
+    echo " Metadata file created : $METADATA_FILE"
+fi
+
+# DESeq analysis
+DESEQ2_OUTPUT="${RESULT_DIR}/DESeq2/deseq2_out.csv"
+VOLCANO_PLOT="${RESULT_DIR}/DESeq2/resultats/volcano_plot.png"
+
+if [[ -f "$DESEQ2_OUTPUT" && -f "$VOLCANO_PLOT" ]]; then
+    echo "DESeq2 analysis and volcano plot already done"
+    else
+      # Check input files exist
+      if [ ! -f "$COUNT_TABLE_CLEAN" ]; then
+    echo "  ✗ Error : clean count table not found"
+    exit 1
+    fi
+    
+    if [ ! -f "$METADATA_FILE" ]; then
+    echo "  ✗ Error : Metadata file not found"
+    exit 1
+    fi
+    
+    apptainer exec "${IMG6}" Rscript deseq2_analysis.R \
+    "${COUNT_TABLE_CLEAN}" \
+    "${METADATA_FILE}" \
+    "${DESEQ2_OUTPUT}"
+    
+    echo "  ✓ DESeq2 is done"
+    fi
+#apptainer shell ${IMG6} Rscript deseq2_analysis.R ${RESULT_DIR}/featureCounts/count_table.txt ${RESULT_DIR}/featureCounts/metadata_deseq2.tsv ${RESULT_DIR}/DESeq2/deseq2_out.csv
+#apptainer exec "/home/manon1/Img_SIF/bioconductor-deseq2_1.46.0--r44he5774e6_1" Rscript deseq2_analysis.R count_table.txt design_matrix.tsv deseq2_out.csv
+
+
