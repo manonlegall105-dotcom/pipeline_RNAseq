@@ -1,0 +1,285 @@
+############################################
+#                 DESEQ2
+############################################
+
+#Créer metadata_matrix
+#metadata <- data.frame(
+#  sample_ID = c("tn115R1","tn115R2","tn38R1","tn38R2"),
+# condition = c("test","test","control","control")
+#)
+
+# Écriture en TSV UTF-8
+#write.table(metadata, file = "metadata_deseq2.tsv",
+ #           sep = "\t", row.names = FALSE, quote = FALSE, fileEncoding = "UTF-8")
+
+
+args <- commandArgs(trailingOnly=TRUE)
+
+# Si aucun argument n'est passé (exécution dans RStudio)
+if (length(args) == 0) {
+  message("⚠️ Aucun argument détecté — mode test local activé")
+  
+  # 👉 Chemins à utiliser pour tester directement dans R
+  count_matrix_file <- "C:/documents/Cours/M2/Christophe_Bordi/analysis_rnaseq/count_table.tsv" #A changer dans le script à lancer dans visual studio
+  design_matrix_file <- "C:/documents/Cours/M2/Christophe_Bordi/analysis_rnaseq/metadata_deseq2.tsv" #A changer dans le script à lancer dans visual studio
+  deseq2_out_csv <- "C:/documents/Cours/M2/Christophe_Bordi/analysis_rnaseq/deseq2_results_test.csv" #A changer dans le script à lancer dans visual studio
+
+} else if  (length(args) < 3) {
+  stop("Usage: Rscript deseq2_analysis.R [count_table.tsv] [metadata_deseq2.tsv] [deseq2_results_test.csv]")
+} else {# Sinon, mode normal (terminal)
+  count_matrix_file <- args[1]
+  design_matrix_file <- args[2]
+  deseq2_out_csv <- args[3]
+  }
+
+library(DESeq2)
+
+#count_matrix_file <- args[1]  
+#design_matrix_file <- args[2]  
+#deseq2_out_csv <- args[3]  
+
+counts <- read.delim(count_matrix_file, header=TRUE, sep="\t", row.names = 1, comment.char = "#")
+
+# Précise où le comptage commence dans la matrice (6ème col)
+counts_matrix <- counts[, 6:ncol(counts)]
+
+# Convertion en intègre (arrondi au nombre entier)  
+counts_matrix <- round(counts_matrix)
+
+sample_info <- read.delim(design_matrix_file, header = TRUE, sep = "\t", row.names = 1)
+sample_info$condition <- as.factor(sample_info$condition)
+
+
+dds <- DESeqDataSetFromMatrix(countData = counts_matrix,
+                              colData = sample_info,
+                              design = ~ condition)
+
+# Analyse DESeq2
+dds <- DESeq(dds)
+
+# Extraction des résultats (log2 fold change, p-values, adjusted p-values)
+res <- results(dds, alpha=0.05)  # Adjusted p-value threshold 0.05
+
+# Tri des résultats par significativité
+res <- res[order(res$padj), ]
+
+# Convertir les résultats en data.frame
+res_df <- as.data.frame(res)
+
+# Ajouter une colonne geneid à partir des rownames
+res_df$geneid <- rownames(res_df)
+
+# Mettre geneid en première colonne
+res_df <- res_df[, c("geneid", setdiff(colnames(res_df), "geneid"))]
+
+# Définir un dossier de sortie
+output_dir <- "/home/manon1/projet_tp/results/DESeq2"
+
+# Construire le chemin complet du fichier final
+deseq2_out_csv <- file.path(output_dir, "deseq2_results.tsv")
+
+# Écrire en TSV sans row.names (la colonne geneid contient déjà les IDs)
+write.table(res_df,
+            file = deseq2_out_csv,
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE)
+
+# Visualisation volcanoplot
+
+# ==============================================================================
+# 1. INSTALLATION ET CHARGEMENT DES PACKAGES
+# ==============================================================================
+
+# Liste des packages nécessaires
+#packages <- c("ggplot2", "dplyr", "ggrepel")
+
+# Installer les packages manquants
+#nouveaux_packages <- packages[!(packages %in% installed.packages()[,"Package"])]
+#if(length(nouveaux_packages)) install.packages(nouveaux_packages)
+
+# Charger les packages
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+# ==============================================================================
+# 2. CHARGEMENT DES DONNÉES
+# ==============================================================================
+
+# Définir le chemin vers votre fichier
+fichier_deseq <- "/home/manon1/projet_tp/results/DESeq2/deseq2_results_test.csv"
+
+# Vérifier que le fichier existe
+if (!file.exists(fichier_deseq)) {
+  stop("Le fichier ", fichier_deseq, " n'existe pas. Vérifiez le chemin.")
+}
+
+# Charger les données
+deseq_results <- read.csv(fichier_deseq, row.names = 1, stringsAsFactors = FALSE)
+
+# Afficher un aperçu des données
+cat("Aperçu des données:\n")
+head(deseq_results)
+cat("\nDimensions:", dim(deseq_results), "\n")
+
+# ==============================================================================
+# 3. DÉFINITION DES SEUILS
+# ==============================================================================
+
+# Seuils standards pour l'analyse différentielle
+seuil_padj <- 0.05        # p-value ajustée
+seuil_log2fc <- 1         # log2 fold change (|log2FC| > 1 = FC > 2)
+
+# ==============================================================================
+# 4. PRÉPARATION DES DONNÉES
+# ==============================================================================
+
+# Créer une colonne pour classifier les gènes
+deseq_results <- deseq_results %>%
+  mutate(
+    # Calculer -log10(padj) pour l'axe Y
+    neg_log10_padj = -log10(padj),
+    
+    # Classifier les gènes selon leur régulation
+    expression = case_when(
+      padj < seuil_padj & log2FoldChange > seuil_log2fc ~ "Surexprimé",
+      padj < seuil_padj & log2FoldChange < -seuil_log2fc ~ "Sous-exprimé",
+      TRUE ~ "Non significatif"
+    ),
+    
+    # Créer une colonne pour les labels (optionnel)
+    gene_name = rownames(deseq_results)
+  )
+
+# Remplacer les valeurs infinies pour -log10(padj)
+deseq_results$neg_log10_padj[is.infinite(deseq_results$neg_log10_padj)] <- 
+  max(deseq_results$neg_log10_padj[!is.infinite(deseq_results$neg_log10_padj)], na.rm = TRUE) + 10
+
+# Retirer les valeurs manquantes
+deseq_results <- deseq_results %>%
+  filter(!is.na(padj) & !is.na(log2FoldChange))
+
+# Statistiques
+cat("\n=== STATISTIQUES ===\n")
+cat("Gènes surexprimés:", sum(deseq_results$expression == "Surexprimé"), "\n")
+cat("Gènes sous-exprimés:", sum(deseq_results$expression == "Sous-exprimé"), "\n")
+cat("Gènes non significatifs:", sum(deseq_results$expression == "Non significatif"), "\n")
+
+# ==============================================================================
+# 5. CRÉATION DU VOLCANO PLOT
+# ==============================================================================
+
+# Définir les couleurs
+couleurs <- c("Surexprimé" = "#E41A1C",      # Rouge
+              "Sous-exprimé" = "#377EB8",    # Bleu
+              "Non significatif" = "grey70")  # Gris
+
+# Créer le volcano plot
+volcano_plot <- ggplot(deseq_results, aes(x = log2FoldChange, 
+                                           y = neg_log10_padj, 
+                                           color = expression)) +
+  
+  # Points
+  geom_point(alpha = 0.6, size = 1.5) +
+  
+  # Couleurs personnalisées
+  scale_color_manual(values = couleurs) +
+  
+  # Lignes de seuils
+  geom_hline(yintercept = -log10(seuil_padj), linetype = "dashed", color = "black") +
+  geom_vline(xintercept = c(-seuil_log2fc, seuil_log2fc), linetype = "dashed", color = "black") +
+  
+  # Labels des axes
+  labs(
+    title = "Volcano Plot - Analyse d'expression différentielle",
+    subtitle = paste0("Seuils: |log2FC| > ", seuil_log2fc, ", padj < ", seuil_padj),
+    x = "log2 Fold Change",
+    y = "-log10 (p-value ajustée)",
+    color = "Régulation"
+  ) +
+  
+  # Thème
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    legend.position = "right",
+    panel.grid.minor = element_blank()
+  )
+
+# Afficher le plot
+print(volcano_plot)
+
+# ==============================================================================
+# 6. LABELLISER LES GÈNES LES PLUS SIGNIFICATIFS (OPTIONNEL)
+# ==============================================================================
+
+# Sélectionner les top gènes à labelliser
+top_genes <- deseq_results %>%
+  filter(expression != "Non significatif") %>%
+  arrange(padj) %>%
+  head(10)
+
+# Volcano plot avec labels
+volcano_plot_labeled <- volcano_plot +
+  geom_text_repel(
+    data = top_genes,
+    aes(label = gene_name),
+    size = 3,
+    box.padding = 0.5,
+    point.padding = 0.3,
+    max.overlaps = 20
+  )
+
+print(volcano_plot_labeled)
+
+# ==============================================================================
+# 7. SAUVEGARDER LES GRAPHIQUES
+# ==============================================================================
+
+# Créer un dossier pour les résultats
+if (!dir.exists("resultats")) {
+  dir.create("resultats")
+}
+
+# Sauvegarder le volcano plot simple
+ggsave("resultats/volcano_plot.png", 
+       plot = volcano_plot, 
+       width = 10, 
+       height = 8, 
+       dpi = 300)
+
+# Sauvegarder le volcano plot avec labels
+ggsave("resultats/volcano_plot_labeled.png", 
+       plot = volcano_plot_labeled, 
+       width = 10, 
+       height = 8, 
+       dpi = 300)
+
+# Sauvegarder en PDF (haute qualité)
+ggsave("resultats/volcano_plot.pdf", 
+       plot = volcano_plot, 
+       width = 10, 
+       height = 8)
+
+cat("\n=== GRAPHIQUES SAUVEGARDÉS ===\n")
+cat("Les graphiques ont été sauvegardés dans le dossier 'resultats/'\n")
+
+# ==============================================================================
+# 8. EXPORTER LA LISTE DES GÈNES DIFFÉRENTIELLEMENT EXPRIMÉS
+# ==============================================================================
+
+# Extraire les gènes significatifs
+genes_significatifs <- deseq_results %>%
+  filter(expression != "Non significatif") %>%
+  arrange(padj) %>%
+  select(gene_name, log2FoldChange, padj, expression)
+
+# Sauvegarder
+write.csv(genes_significatifs, 
+          "resultats/genes_differentiels.csv", 
+          row.names = FALSE)
+
+cat("Liste des gènes différentiels sauvegardée: resultats/genes_differentiels.csv\n")
+cat("\nScript terminé avec succès!\n")
