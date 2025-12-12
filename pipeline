@@ -179,7 +179,7 @@ COUNT_TABLE_CLEAN="${OUTPUT_DIR}/count_table_clean.txt"
 done
 
 # =================================
-#          DESeq2
+#             DESeq2
 # =================================
 #micromamba create -n r_env r-base=4.4.2 r-essentials -c conda-forge
 #micromamba activate r_env
@@ -204,28 +204,11 @@ if [ ! -f "$COUNT_TABLE_CLEAN" ]; then
     echo "ERROR: $COUNT_TABLE_CLEAN files doesn't exist!"
     exit 1
 fi
+
 # DESeq analysis
-#micromamba install -c conda-forge -c bioconda bioconductor-deseq2
 
 apptainer exec "${IMG6}" Rscript deseq2_analysis.R
-# "${COUNT_TABLE_CLEAN}" \
-# "${METADATA_FILE}" \
-# "${DESEQ2_OUTPUT}"
 echo "  ✓ DESeq2 is done"
 
-#DESEQ2_OUTPUT="${RESULT_DIR}/DESeq2/deseq2_out.csv"
-#VOLCANO_PLOT="${RESULT_DIR}/DESeq2/resultats/volcano_plot.png"
-
-# if [[ -f "$DESEQ2_OUTPUT" && -f "$VOLCANO_PLOT" ]]; then
-#     echo "DESeq2 analysis and volcano plot already done"
-#     else
-#       # Check input files exist
-#       if [ ! -f "$COUNT_TABLE_CLEAN" ]; then
-#     echo "  ✗ Error : clean count table not found"
-#     exit 1
-#     fi
-
+#micromamba install -c conda-forge -c bioconda bioconductor-deseq2
 #apptainer shell ${IMG6} Rscript deseq2_analysis.R ${RESULT_DIR}/featureCounts/count_table.txt ${RESULT_DIR}/featureCounts/metadata_deseq2.tsv ${RESULT_DIR}/DESeq2/deseq2_out.csv
-
-
-
