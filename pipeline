@@ -1,7 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-#           Variables
+# ================================
+#           Pre-analysys
+# =================================
+
+# Variables
 DATA_DIR="/home/manon1/projet_tp/data"
 RESULT_DIR="/home/manon1/projet_tp/results"
 IMG1="/home/manon1/Img_SIF/fastqc_0.12.1--hdfd78af_0"
@@ -15,7 +19,7 @@ REF_FASTA="${DATA_DIR}/Pseudomonas_aeruginosa_PA14.fasta"
 REF_GFF="${DATA_DIR}/Pseudomonas_aeruginosa_PA14.gff3"
 METADATA_FILE="${RESULT_DIR}/featureCounts/metadata_deseq2.tsv"
 
-# Création des dossiers
+# Create repositories
 mkdir -p "${RESULT_DIR}"/{fastqc_report,fastqc_report_trimmed,sickle_trim,bowtie,featureCounts,DESeq2}
 
 # =========================
@@ -92,7 +96,8 @@ echo " ✓ All FASTQC_trimmed done."
 # =========================
 #          BOWTIE2
 # =========================
-#Building the index
+
+# Building the index
 GENOME_INDEX="${RESULT_DIR}/bowtie/genome_index"
 if compgen -G "${GENOME_INDEX}".*.bt2 > /dev/null; then
 echo "Bowtie2 index already exists, skipping build."
@@ -102,7 +107,7 @@ apptainer exec "$IMG3" bowtie2-build "$REF_FASTA" "$GENOME_INDEX"
 echo " ✓ Index built successfully."
 fi
 
-#Alignment
+# Alignment
 ALIGN_DIR="${RESULT_DIR}/bowtie"
 for SAMPLE in "${SAMPLES[@]}"; do
 OUT_BAM="${ALIGN_DIR}/${SAMPLE}.sorted.bam"
@@ -134,6 +139,7 @@ echo " ✓ All alignments done."
 # =================================
 #          FeautureCounts
 # =================================
+
 for SAMPLE in "${SAMPLES[@]}"; do
 OUTPUT_DIR="${RESULT_DIR}/featureCounts"
 COUNT_TABLE="${OUTPUT_DIR}/count_table.txt"
@@ -173,7 +179,7 @@ COUNT_TABLE_CLEAN="${OUTPUT_DIR}/count_table_clean.txt"
 done
 
 # =================================
-#              DESeq2
+#          DESeq2
 # =================================
 #micromamba create -n r_env r-base=4.4.2 r-essentials -c conda-forge
 #micromamba activate r_env
@@ -193,32 +199,33 @@ EOF
     echo " Metadata file created : $METADATA_FILE"
 fi
 
+# Check if count table file exists
+if [ ! -f "$COUNT_TABLE_CLEAN" ]; then
+    echo "ERROR: $COUNT_TABLE_CLEAN files doesn't exist!"
+    exit 1
+fi
 # DESeq analysis
-DESEQ2_OUTPUT="${RESULT_DIR}/DESeq2/deseq2_out.csv"
-VOLCANO_PLOT="${RESULT_DIR}/DESeq2/resultats/volcano_plot.png"
+#micromamba install -c conda-forge -c bioconda bioconductor-deseq2
 
-if [[ -f "$DESEQ2_OUTPUT" && -f "$VOLCANO_PLOT" ]]; then
-    echo "DESeq2 analysis and volcano plot already done"
-    else
-      # Check input files exist
-      if [ ! -f "$COUNT_TABLE_CLEAN" ]; then
-    echo "  ✗ Error : clean count table not found"
-    exit 1
-    fi
-    
-    if [ ! -f "$METADATA_FILE" ]; then
-    echo "  ✗ Error : Metadata file not found"
-    exit 1
-    fi
-    
-    apptainer exec "${IMG6}" Rscript deseq2_analysis.R \
-    "${COUNT_TABLE_CLEAN}" \
-    "${METADATA_FILE}" \
-    "${DESEQ2_OUTPUT}"
-    
-    echo "  ✓ DESeq2 is done"
-    fi
+apptainer exec "${IMG6}" Rscript deseq2_analysis.R
+# "${COUNT_TABLE_CLEAN}" \
+# "${METADATA_FILE}" \
+# "${DESEQ2_OUTPUT}"
+echo "  ✓ DESeq2 is done"
+
+#DESEQ2_OUTPUT="${RESULT_DIR}/DESeq2/deseq2_out.csv"
+#VOLCANO_PLOT="${RESULT_DIR}/DESeq2/resultats/volcano_plot.png"
+
+# if [[ -f "$DESEQ2_OUTPUT" && -f "$VOLCANO_PLOT" ]]; then
+#     echo "DESeq2 analysis and volcano plot already done"
+#     else
+#       # Check input files exist
+#       if [ ! -f "$COUNT_TABLE_CLEAN" ]; then
+#     echo "  ✗ Error : clean count table not found"
+#     exit 1
+#     fi
+
 #apptainer shell ${IMG6} Rscript deseq2_analysis.R ${RESULT_DIR}/featureCounts/count_table.txt ${RESULT_DIR}/featureCounts/metadata_deseq2.tsv ${RESULT_DIR}/DESeq2/deseq2_out.csv
-#apptainer exec "/home/manon1/Img_SIF/bioconductor-deseq2_1.46.0--r44he5774e6_1" Rscript deseq2_analysis.R count_table.txt design_matrix.tsv deseq2_out.csv
+
 
 
