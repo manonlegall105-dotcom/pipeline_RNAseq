@@ -1,70 +1,93 @@
 ############################################
 #                 DESEQ2
-############################################
+###########################################
 
-#Créer metadata_matrix
-#metadata <- data.frame(
-#  sample_ID = c("tn115R1","tn115R2","tn38R1","tn38R2"),
-# condition = c("test","test","control","control")
-#)
+# 👉 Chemins à utiliser
+count_matrix_file <- "/home/manon1/projet_tp/results/featureCounts/count_table.txt" #A changer dans le script à lancer dans visual studio
+metadata_file <- "/home/manon1/projet_tp/results/DESeq2/metadata_deseq2.tsv" #A changer dans le script à lancer dans visual studio
 
-# Écriture en TSV UTF-8
-#write.table(metadata, file = "metadata_deseq2.tsv",
- #           sep = "\t", row.names = FALSE, quote = FALSE, fileEncoding = "UTF-8")
+deseq2_output_dir <- "/home/manon1/projet_tp/results/DESeq2/" #A changer dans le script à lancer dans visual studio
 
+# Paramètres d'analyse
+padj_threshold <- 0.05
+lfc_threshold <- 1
 
-args <- commandArgs(trailingOnly=TRUE)
-
-# Si aucun argument n'est passé (exécution dans RStudio)
-if (length(args) == 0) {
-  message("⚠️ Aucun argument détecté — mode test local activé")
-  
-  # 👉 Chemins à utiliser pour tester directement dans R
-  count_matrix_file <- "C:/documents/Cours/M2/Christophe_Bordi/analysis_rnaseq/count_table.tsv" #A changer dans le script à lancer dans visual studio
-  design_matrix_file <- "C:/documents/Cours/M2/Christophe_Bordi/analysis_rnaseq/metadata_deseq2.tsv" #A changer dans le script à lancer dans visual studio
-  deseq2_out_csv <- "C:/documents/Cours/M2/Christophe_Bordi/analysis_rnaseq/deseq2_results_test.csv" #A changer dans le script à lancer dans visual studio
-
-} else if  (length(args) < 3) {
-  stop("Usage: Rscript deseq2_analysis.R [count_table.tsv] [metadata_deseq2.tsv] [deseq2_results_test.csv]")
-} else {# Sinon, mode normal (terminal)
-  count_matrix_file <- args[1]
-  design_matrix_file <- args[2]
-  deseq2_out_csv <- args[3]
-  }
-
+# Chargement library DESeq2
 library(DESeq2)
 
-#count_matrix_file <- args[1]  
-#design_matrix_file <- args[2]  
-#deseq2_out_csv <- args[3]  
+# Vérifier l'existence des fichiers
+if (!file.exists(count_matrix_file)) {
+  stop("ERREUR: Le fichier de comptage '", count_matrix_file, "' n'existe pas!")
+}
+if (!file.exists(metadata_file)) {
+  stop("ERREUR: Le fichier metadata '", metadata_file, "' n'existe pas!")
+}
 
+# Charger les fichiers de comptage de FeatureCounts et meatadata
 counts <- read.delim(count_matrix_file, header=TRUE, sep="\t", row.names = 1, comment.char = "#")
+metadata <- read.delim(metadata_file, header = TRUE, sep = "\t", row.names = 1)
 
-# Précise où le comptage commence dans la matrice (6ème col)
-counts_matrix <- counts[, 6:ncol(counts)]
+# Retirer les colonnes de métadonnées de featureCounts (Chr, Start, End, Strand, Length)
+if ("Chr" %in% colnames(counts)) {
+  cat("Détection du format featureCounts - suppression des colonnes de métadonnées\n")
+  counts <- counts[, -c(1:5)]  # Enlever Chr, Start, End, Strand, Length
+}
 
-# Convertion en intègre (arrondi au nombre entier)  
-counts_matrix <- round(counts_matrix)
+# Réordonner les colonnes de counts pour correspondre à metadata
+counts <- counts[, rownames(metadata)]
 
-sample_info <- read.delim(design_matrix_file, header = TRUE, sep = "\t", row.names = 1)
-sample_info$condition <- as.factor(sample_info$condition)
+# Vérifier la correspondance
+if (!all(rownames(metadata) == colnames(counts))) {
+  stop("ERREUR: L'ordre des échantillons ne correspond pas entre metadata et comptage!")
+}
 
+cat("✓ Vérification réussie: les échantillons correspondent\n")
+cat("Conditions présentes:", paste(unique(metadata$condition), collapse = ", "), "\n\n")
 
-dds <- DESeqDataSetFromMatrix(countData = counts_matrix,
-                              colData = sample_info,
+# Convertion en intègre (arrondi au nombre entier)
+#counts_matrix <- round(counts_matrix)
+
+#sample_info <- read.delim(design_matrix_file, header = TRUE, sep = "\t", row.names = 1)
+#sample_info$condition <- as.factor(sample_info$condition)
+
+# Création de l'objet DESeq2
+dds <- DESeqDataSetFromMatrix(countData = counts,
+                              colData = metadata,
                               design = ~ condition)
+cat("✓ Objet DESeq2 créé\n")
 
 # Analyse DESeq2
 dds <- DESeq(dds)
+cat("✓ Analyse DESeq2 terminée\n\n")
+
+# Afficher les facteurs de normalisation
+cat("Facteurs de taille (normalisation):\n")
+print(sizeFactors(dds))
+cat("\n")
 
 # Extraction des résultats (log2 fold change, p-values, adjusted p-values)
 res <- results(dds, alpha=0.05)  # Adjusted p-value threshold 0.05
 
 # Tri des résultats par significativité
-res <- res[order(res$padj), ]
+res_ordered <- res[order(res$padj), ]
+
+# Résumé des résultats
+cat("\nRésumé de l'analyse différentielle:\n")
+summary(res)
+
+# Compter les gènes différentiellement exprimés
+sig_genes <- sum(res$padj < padj_threshold, na.rm = TRUE)
+up_genes <- sum(res$padj < padj_threshold & res$log2FoldChange > 0, na.rm = TRUE)
+down_genes <- sum(res$padj < padj_threshold & res$log2FoldChange < 0, na.rm = TRUE)
+
+cat("\n=== Statistiques ===\n")
+cat("\n=== Statistiques ===\n")
+cat("Gènes significatifs (padj <", padj_threshold, "):", sig_genes, "\n")
+cat("  - Sur-exprimés:", up_genes, "\n")
+cat("  - Sous-exprimés:", down_genes, "\n\n")
 
 # Convertir les résultats en data.frame
-res_df <- as.data.frame(res)
+res_df <- as.data.frame(res_ordered)
 
 # Ajouter une colonne geneid à partir des rownames
 res_df$geneid <- rownames(res_df)
@@ -72,19 +95,32 @@ res_df$geneid <- rownames(res_df)
 # Mettre geneid en première colonne
 res_df <- res_df[, c("geneid", setdiff(colnames(res_df), "geneid"))]
 
-# Définir un dossier de sortie
-output_dir <- "/home/manon1/projet_tp/results/DESeq2"
+# Exporter tous les résultats
+write.csv(res_df,
+          file = file.path(deseq2_output_dir, "deseq2_all_results.csv"),
+          row.names = FALSE)
+cat("✓ Tous les résultats exportés: deseq2_all_results.csv\n")
 
-# Construire le chemin complet du fichier final
-deseq2_out_csv <- file.path(output_dir, "deseq2_results.tsv")
+# Exporter uniquement les gènes significatifs
+res_sig <- res_df[!is.na(res_df$padj) & res_df$padj < padj_threshold, ]
+write.csv(res_sig,
+          file = file.path(deseq2_output_dir, "deseq2_significant_genes.csv"),
+          row.names = FALSE)
+cat("✓ Gènes significatifs exportés: deseq2_significant_genes.csv\n")
 
-# Écrire en TSV sans row.names (la colonne geneid contient déjà les IDs)
-write.table(res_df,
-            file = deseq2_out_csv,
-            sep = "\t",
-            quote = FALSE,
-            row.names = FALSE,
-            col.names = TRUE)
+# Exporter les gènes sur-exprimés
+res_up <- res_sig[res_sig$log2FoldChange > 0, ]
+write.csv(res_up,
+          file = file.path(deseq2_output_dir, "deseq2_upregulated_genes.csv"),
+          row.names = FALSE)
+cat("✓ Gènes sur-exprimés exportés: deseq2_upregulated_genes.csv\n")
+
+# Exporter les gènes sous-exprimés
+res_down <- res_sig[res_sig$log2FoldChange < 0, ]
+write.csv(res_down,
+          file = file.path(deseq2_output_dir, "deseq2_downregulated_genes.csv"),
+          row.names = FALSE)
+cat("✓ Gènes sous-exprimés exportés: deseq2_downregulated_genes.csv\n\n")
 
 # Visualisation volcanoplot
 
